@@ -1,100 +1,102 @@
 // ==UserScript==
-// @name         Notion.so RTL support for written text
+// @name         Notion RTL
 // @namespace    http://tampermonkey.net/
-// @version      0.5
-// @description  Add support for writing RTL text blocks (including todo list, bullet list, headings, etc.) and dynamically adjust the page direction to RTL if needed. This script changes text direction automatically depending on the language of the first letter in a text block. Helpful for writing in RTL languages. English text remains unaffected.
-// @author       OrenK
-// @include      https://www.notion.so/*
+// @author       MichaelB
+// @version      1.0
+// @description  Instantly set dir="auto" on Notion blocks & title, so Hebrew text flows RTL without delay.
+// @match        https://www.notion.so/*
 // @grant        none
-// @downloadURL https://update.greasyfork.org/scripts/398348/Notionso%20RTL%20support%20for%20written%20text.user.js
-// @updateURL https://update.greasyfork.org/scripts/398348/Notionso%20RTL%20support%20for%20written%20text.meta.js
 // ==/UserScript==
 
 (function() {
-    'use strict';
+  'use strict';
 
-    var GM_addStyle =
-        function(css) {
-            var style = document.getElementById("GM_addStyleBy8626") || (function() {
-                var style = document.createElement('style');
-                style.type = 'text/css';
-                style.id = "GM_addStyleBy8626";
-                document.head.appendChild(style);
-                return style;
-            })();
-            var sheet = style.sheet;
-            sheet.insertRule(css, (sheet.rules || sheet.cssRules || []).length);
-        };
+  /************************************************************
+   * 1) Inject some CSS to align text properly from the start.
+   ************************************************************/
+  const styleEl = document.createElement('style');
+  styleEl.textContent = `
+    /* Make .notion-selectable text follow the direction set by dir="auto" */
+    .notion-selectable * {
+      text-align: start !important;
+    }
 
-    GM_addStyle(".notion-selectable * { text-align: start !important; }");
-    GM_addStyle(".notion-selectable.notion-to_do-block > div > div:nth-of-type(2) { margin-right: 4px !important; }");
+    /* Force the Notion title area to also use auto direction */
+    .notion-header, .notion-header *,
+    .notion-title,  .notion-title *,
+    .notion-page-block div[placeholder="Untitled"] {
+      direction: auto !important;
+      text-align: start !important;
+    }
+  `;
+  document.head.appendChild(styleEl);
 
-    var blackListClasses = ['notion-collection-item', 'notion-collection_view-block'];
+  /************************************************************
+   * 2) A helper to set `dir="auto"` on a newly added node (and its children).
+   ************************************************************/
+  function applyAutoDirToNode(node) {
+    // If it's a .notion-selectable block, set dir="auto"
+    if (
+      node.nodeType === Node.ELEMENT_NODE &&
+      node.classList &&
+      node.classList.contains('notion-selectable')
+    ) {
+      node.setAttribute('dir', 'auto');
+    }
 
-    // Utility to check if an element contains certain classes
-    var containsClasses = function(element, classesNames) {
-        for (var index = 0; index < classesNames.length; index++) {
-            if (element.classList.contains(classesNames[index])) {
-                return true;
-            }
-        }
-        return false;
-    };
+    // For any child .notion-selectable elements
+    const childSelectables = node.querySelectorAll?.('.notion-selectable') || [];
+    childSelectables.forEach(child => {
+      child.setAttribute('dir', 'auto');
+    });
 
-    // Determine the direction based on the first strong directional character
-    var determinePageDirection = function() {
-        var notionPage = document.querySelector('.notion-page-content');
-        if (notionPage) {
-            var textContent = notionPage.innerText.trim();
-            var rtlChars = /[\u0591-\u07FF\uFB1D-\uFDFD\uFE70-\uFEFC]/;
-            var isRTL = rtlChars.test(textContent);
-            document.documentElement.setAttribute('dir', isRTL ? 'rtl' : 'ltr');
-        }
-    };
+    // If it matches a known title container, also set `dir="auto"`
+    // (In case your environment needs it set explicitly.)
+    if (node.matches?.('.notion-header, .notion-title, .notion-header *, .notion-title *')) {
+      node.setAttribute('dir', 'auto');
+    }
+    if (node.matches?.('div[placeholder="Untitled"]')) {
+      node.setAttribute('dir', 'auto');
+    }
+  }
 
-    // Callback for handling mutations on Notion content
-    var notionPageCallback = function(mutations) {
-        mutations.forEach(mutation => {
-            mutation.addedNodes.forEach(addedNode => {
-                if (addedNode.nodeType === Node.ELEMENT_NODE) {
-                    if (addedNode.tagName === 'DIV' && addedNode.classList.contains('notion-selectable') && !containsClasses(addedNode, blackListClasses)) {
-                        addedNode.setAttribute('dir', 'auto');
-                    }
-                    Array.from(addedNode.getElementsByClassName('notion-selectable')).forEach(child => {
-                        if (!containsClasses(child, blackListClasses)) {
-                            child.setAttribute('dir', 'auto');
-                        }
-                    });
-                }
-            });
-        });
-        determinePageDirection(); // Reevaluate page direction on mutation
-    };
+  /************************************************************
+   * 3) Global MutationObserver callback: watch for *all* new nodes.
+   ************************************************************/
+  function globalMutationCallback(mutationsList) {
+    for (const mutation of mutationsList) {
+      // For newly added nodes
+      mutation.addedNodes.forEach(addedNode => {
+        applyAutoDirToNode(addedNode);
+      });
 
-    // Observer for Notion pages
-    var notionPagesWeakMap = new WeakMap();
-    var documentCallback = function() {
-        var notionPages = document.getElementsByClassName('notion-page-content');
-        for (var notionPage of notionPages) {
-            if (!notionPagesWeakMap.has(notionPage)) {
-                Array.from(notionPage.getElementsByClassName('notion-selectable')).forEach(divElement => {
-                    if (!containsClasses(divElement, blackListClasses)) {
-                        divElement.setAttribute('dir', 'auto');
-                    }
-                });
-                var pageObserver = new MutationObserver(notionPageCallback);
-                pageObserver.observe(notionPage, { subtree: true, childList: true });
-                notionPagesWeakMap.set(notionPage, pageObserver);
-            }
-        }
-        determinePageDirection(); // Initial evaluation of page direction
-    };
+      // If the mutation is, e.g., characterData changed, or
+      // subtree changes that can re-render text, you could also
+      // check the target node:
+      if (mutation.type === 'characterData') {
+        applyAutoDirToNode(mutation.target.parentNode);
+      }
+    }
+  }
 
-    var documentObserver = new MutationObserver(documentCallback);
+  /************************************************************
+   * 4) Start observing *the entire document* for changes.
+   ************************************************************/
+  const observer = new MutationObserver(globalMutationCallback);
+  observer.observe(document, {
+    subtree: true,
+    childList: true,
+    characterData: true
+  });
 
-    // Start observing the document for changes
-    documentObserver.observe(document, { subtree: true, childList: true });
-
-    // Initial check
-    determinePageDirection();
+  /************************************************************
+   * 5) On initial load, also immediately set dir="auto" for
+   *    any existing .notion-selectable blocks and title elements.
+   ************************************************************/
+  document.querySelectorAll('.notion-selectable').forEach(el => {
+    el.setAttribute('dir', 'auto');
+  });
+  document.querySelectorAll('.notion-header, .notion-title, div[placeholder="Untitled"]').forEach(el => {
+    el.setAttribute('dir', 'auto');
+  });
 })();
